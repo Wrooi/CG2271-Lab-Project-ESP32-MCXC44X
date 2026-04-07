@@ -1,0 +1,7 @@
+CG2271 ESP-IDF things to note:
+- directory no spaces, best if it's just "C:\esp\.espressif\v6.0\esp-idf\CG2271\"
+- click 'activate anyway' when prompted
+- Need to use the ESP-IDF command palette to run and do other things, not the default vscode one
+- After creating the project, you need to click 'open project' to the new directory for it be recognized as a 'ESP-IDF project'
+- Baud rate is 9600
+- Ignore the errors in the compiler. As long as it can be built, they aren't an issue.
