@@ -8,13 +8,11 @@
 #include "nvs_flash.h"
 #include "esp_netif.h"
 #include "esp_http_client.h"
-#include "esp_crt_bundle.h"
 #include "secrets.h"
 
 // ─── Tags for log output ────────────────────────────────────────────────────
 #define TAG_WIFI "WIFI"
 #define TAG_HTTP "HTTP"
-#define UART_BAUD 9600
 
 // ─── Wi-Fi ───────────────────────────────────────────────────────────────────
 #define WIFI_CONNECTED_BIT BIT0
@@ -93,11 +91,10 @@ static void test_https_get(void) {
     memset(response_buf, 0, sizeof(response_buf));
 
     esp_http_client_config_t config = {
-        .url                         = "https://httpbin.org/get",
-        .event_handler               = http_event_handler,
-        .transport_type              = HTTP_TRANSPORT_OVER_SSL,
-        .skip_cert_common_name_check = true,
-        .crt_bundle_attach           = esp_crt_bundle_attach,  // <-- add this
+        .url                    = "https://httpbin.org/get",
+        .event_handler          = http_event_handler,
+        .transport_type         = HTTP_TRANSPORT_OVER_SSL,
+        .skip_cert_common_name_check = true,  // OK for testing, remove in production
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
