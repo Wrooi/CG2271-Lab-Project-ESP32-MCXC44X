@@ -5,3 +5,4 @@ CG2271 ESP-IDF things to note:
 - After creating the project, you need to click 'open project' to the new directory for it be recognized as a 'ESP-IDF project'
 - Baud rate is 9600
 - Ignore the errors in the compiler. As long as it can be built, they aren't an issue.
+- sdkconfig and CMakeLists.txt (main branch) have been editted
