@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
@@ -108,6 +109,7 @@ typedef enum {
     FRAMEBUFFER_EVENT_APPLY_STATE = 0,
     FRAMEBUFFER_EVENT_SUBMIT = 1,
     FRAMEBUFFER_EVENT_PROMPT_REQUEST = 2,
+    FRAMEBUFFER_EVENT_API_TEST = 3,
 } framebuffer_event_type_t;
 
 typedef struct {
@@ -146,6 +148,7 @@ static uint32_t s_uart_parse_fail_count;
 static bool s_submit_stub_success_flag = true;
 
 static esp_err_t app_socket_send_frame(const char *payload, size_t payload_len);
+static bool app_ws_handle_text_command(const char *payload);
 
 static char s_active_prompt_word[APP_API_PROMPT_WORD_BUFFER_SIZE] = "house";
 
@@ -416,6 +419,12 @@ static esp_err_t app_ws_handler(httpd_req_t *req)
     }
 
     err = httpd_ws_recv_frame(req, &rx_pkt, rx_pkt.len);
+    if (err == ESP_OK && rx_pkt.type == HTTPD_WS_TYPE_TEXT) {
+        ((char *)rx_pkt.payload)[rx_pkt.len] = '\0';
+        if (!app_ws_handle_text_command((const char *)rx_pkt.payload)) {
+            ESP_LOGI(TAG, "Ignoring WebSocket text command: %s", (const char *)rx_pkt.payload);
+        }
+    }
     free(rx_pkt.payload);
     return err;
 }
@@ -868,6 +877,24 @@ static void app_enqueue_prompt_request_event(void)
     }
 }
 
+static void app_enqueue_api_test_event(void)
+{
+    if (s_framebuffer_state_queue == NULL) {
+        return;
+    }
+
+    framebuffer_state_msg_t msg = {
+        .type = FRAMEBUFFER_EVENT_API_TEST,
+    };
+
+    const BaseType_t queued = xQueueSend(s_framebuffer_state_queue,
+                                         &msg,
+                                         pdMS_TO_TICKS(APP_RTOS_CONFIG.framebuffer_queue_send_timeout_ms));
+    if (queued != pdPASS) {
+        s_framebuffer_queue_drop_count++;
+    }
+}
+
 static void app_process_packet_line_fast_path(const char *packet_line)
 {
     static TickType_t last_malformed_log_tick;
@@ -950,7 +977,42 @@ static void app_process_framebuffer_event(const framebuffer_state_msg_t *msg,
         if (notify_err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to send PROMPT ready command to MCU: %s", esp_err_to_name(notify_err));
         }
+        return;
     }
+
+    if (msg->type == FRAMEBUFFER_EVENT_API_TEST) {
+        image_framebuffer_fill_test_pattern(&s_framebuffer);
+        ESP_LOGI(TAG, "API test pattern prepared; submitting framebuffer to OpenAI");
+        app_submit_drawing_for_ai(socket_payload, socket_payload_len);
+        return;
+    }
+}
+
+static bool app_ws_handle_text_command(const char *payload)
+{
+    if (payload == NULL || payload[0] == '\0') {
+        return false;
+    }
+
+    if (strcmp(payload, "api_test") == 0) {
+        app_enqueue_api_test_event();
+        return true;
+    }
+
+    cJSON *root = cJSON_Parse(payload);
+    if (root == NULL) {
+        return false;
+    }
+
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    bool handled = false;
+    if (cJSON_IsString(type) && type->valuestring != NULL && strcmp(type->valuestring, "api_test") == 0) {
+        app_enqueue_api_test_event();
+        handled = true;
+    }
+
+    cJSON_Delete(root);
+    return handled;
 }
 
 static void app_uart_rx_task(void *arg)
