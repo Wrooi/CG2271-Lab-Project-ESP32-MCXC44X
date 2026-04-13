@@ -35,6 +35,7 @@ typedef struct {
 
 void image_framebuffer_init(image_framebuffer_t *framebuffer);
 void image_framebuffer_clear(image_framebuffer_t *framebuffer);
+void image_framebuffer_fill_test_pattern(image_framebuffer_t *framebuffer);
 bool image_framebuffer_parse_input_packet(const char *packet, image_input_state_t *out_state);
 void image_framebuffer_apply_input(image_framebuffer_t *framebuffer, const image_input_state_t *state);
 const image_framebuffer_status_t *image_framebuffer_get_status(const image_framebuffer_t *framebuffer);
