@@ -4,16 +4,17 @@
     "interface/ftdi/esp_ftdi.cfg",
     "target/esp32s2.cfg"
   ],
-  "idf.portWin": "COM3",
-  "idf.currentSetup": "C:\\esp\\.espressif\\v6.0\\esp-idf",
+  "idf.port": "/dev/tty.usbserial-2120",
+  "idf.currentSetup": "/Users/benjamin/.espressif/v6.0/esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s2"
   },
-  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-20.1.1_20250829\\esp-clang\\bin\\clangd.exe",
+  "clangd.path": "/Users/benjamin/.espressif/tools/esp-clang/esp-20.1.1_20250829/esp-clang/bin/clangd",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=c:\\esp\\.espressif\\v6.0\\esp-idf\\CG2271\\ESP32S2_test\\build"
+    "--compile-commands-dir=/Users/benjamin/Documents/CodingProjects/etch-a-sketch-main/etch-a-sketch-esp32/build"
   ],
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "idf.portWin": "COM3"
 }

@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<!-- saved from url=(0087)file:///C:/Users/ooiwe/Dropbox/PC%20(2)/Downloads/Telegram%20Desktop/etch-a-sketch.html -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Etch-a-Sketch AI Pictionary</title>
+<link href="./Etch-a-Sketch AI Pictionary_files/css2" rel="stylesheet">
+<style>
+  :root {
+    --etch-red: #d42b2b;
+    --etch-red-dark: #a81e1e;
+    --etch-red-shadow: #7a1515;
+    --etch-frame: #d42b2b;
+    --screen-bg: #c8c8b4;
+    --screen-line: #444;
+    --knob-bg: #e8e8e0;
+    --knob-shadow: #999;
+    --text-dark: #2a2a2a;
+    --green: #2ecc40;
+    --red-result: #e74c3c;
+    --yellow: #f1c40f;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f5f0e8;
+    background-image:
+      radial-gradient(circle at 20% 80%, rgba(212,43,43,0.06) 0%, transparent 50%),
+      radial-gradient(circle at 80% 20%, rgba(212,43,43,0.04) 0%, transparent 50%);
+    font-family: 'Fredoka', sans-serif;
+    padding: 20px;
+  }
+
+  .app-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+    max-width: 700px;
+    width: 100%;
+  }
+
+  /* --- TITLE --- */
+  .title-area {
+    text-align: center;
+  }
+  .title-area h1 {
+    font-family: 'Fredoka', sans-serif;
+    font-weight: 700;
+    font-size: 28px;
+    color: var(--etch-red);
+    letter-spacing: -0.5px;
+    text-shadow: 0 2px 4px rgba(168,30,30,0.15);
+  }
+  .title-area .subtitle {
+    font-size: 13px;
+    color: #888;
+    margin-top: 4px;
+    font-weight: 400;
+  }
+
+  /* --- PROMPT BANNER --- */
+  .prompt-banner {
+    background: white;
+    border: 2px solid #e0ddd5;
+    border-radius: 14px;
+    padding: 14px 24px;
+    text-align: center;
+    width: 100%;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+  }
+  .prompt-banner .label {
+    font-size: 13px;
+    color: #999;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .prompt-banner .word {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-dark);
+  }
+  .prompt-banner.waiting .word {
+    color: #bbb;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 16px;
+  }
+
+  /* --- ETCH-A-SKETCH FRAME --- */
+  .etch-frame {
+    background: var(--etch-red);
+    border-radius: 24px;
+    padding: 28px 28px 20px 28px;
+    box-shadow:
+      0 8px 30px rgba(168,30,30,0.25),
+      0 2px 6px rgba(0,0,0,0.1),
+      inset 0 2px 0 rgba(255,255,255,0.15),
+      inset 0 -2px 0 var(--etch-red-shadow);
+    width: 100%;
+    max-width: 560px;
+    position: relative;
+  }
+
+  .etch-label {
+    text-align: center;
+    margin-bottom: 14px;
+  }
+  .etch-label span {
+    font-family: 'Fredoka', sans-serif;
+    font-weight: 700;
+    font-size: 16px;
+    color: rgba(255,255,255,0.85);
+    letter-spacing: 4px;
+    text-transform: uppercase;
+  }
+
+  .screen-container {
+    background: var(--screen-bg);
+    border-radius: 10px;
+    padding: 6px;
+    box-shadow:
+      inset 0 3px 10px rgba(0,0,0,0.2),
+      inset 0 1px 3px rgba(0,0,0,0.15);
+    position: relative;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    border-radius: 6px;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: var(--screen-bg);
+  }
+
+  /* pen state indicator */
+  .pen-indicator {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(0,0,0,0.5);
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    color: white;
+    backdrop-filter: blur(4px);
+    transition: opacity 0.2s;
+  }
+  .pen-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  .pen-dot.up {
+    background: #e74c3c;
+    box-shadow: 0 0 6px #e74c3c;
+  }
+
+  /* knobs row */
+  .knobs-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 16px 30px 4px 30px;
+  }
+  .knob {
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #fff, var(--knob-bg) 60%, var(--knob-shadow));
+    box-shadow:
+      0 4px 8px rgba(0,0,0,0.2),
+      inset 0 1px 0 rgba(255,255,255,0.8);
+    border: 2px solid #ccc;
+    position: relative;
+  }
+  .knob::after {
+    content: '';
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 10px; height: 10px;
+    background: #bbb;
+    border-radius: 50%;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.3);
+  }
+  .knob-label {
+    font-size: 10px;
+    color: rgba(255,255,255,0.6);
+    text-align: center;
+    margin-top: 4px;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+
+  /* --- RESULT PANEL --- */
+  .result-panel {
+    background: white;
+    border: 2px solid #e0ddd5;
+    border-radius: 14px;
+    padding: 18px 24px;
+    width: 100%;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    display: none;
+  }
+  .result-panel.show { display: block; }
+
+  .result-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .result-icon {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    color: white;
+    flex-shrink: 0;
+  }
+  .result-icon.correct { background: var(--green); }
+  .result-icon.wrong { background: var(--red-result); }
+
+  .result-text .guess-label {
+    font-size: 12px;
+    color: #999;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .result-text .guess-word {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-dark);
+  }
+
+  .confidence-bar-container {
+    margin-top: 10px;
+  }
+  .confidence-label {
+    font-size: 11px;
+    color: #999;
+    font-weight: 600;
+    margin-bottom: 4px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .confidence-bar {
+    height: 8px;
+    background: #eee;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .confidence-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: var(--green);
+    transition: width 0.6s ease;
+  }
+  .confidence-fill.low { background: var(--red-result); }
+  .confidence-fill.mid { background: var(--yellow); }
+
+  /* --- STATUS BAR --- */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #999;
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #ccc;
+  }
+  .status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.error { background: var(--red-result); }
+
+  /* --- DEBUG / SIM CONTROLS --- */
+  .sim-controls {
+    background: #2a2a2a;
+    border-radius: 14px;
+    padding: 16px 20px;
+    width: 100%;
+    color: #ccc;
+    font-family: 'Space Mono', monospace;
+    font-size: 12px;
+  }
+  .sim-controls summary {
+    cursor: pointer;
+    font-weight: 700;
+    color: #eee;
+    font-size: 13px;
+    user-select: none;
+  }
+  .sim-inner {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .sim-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .sim-btn {
+    background: #444;
+    border: 1px solid #555;
+    color: #eee;
+    padding: 6px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    transition: background 0.15s;
+  }
+  .sim-btn:hover { background: #555; }
+  .sim-btn:active { background: var(--etch-red); }
+
+  .sim-info {
+    color: #777;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .sim-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .sim-input-row label {
+    color: #999;
+    min-width: 30px;
+  }
+  .sim-input {
+    background: #333;
+    border: 1px solid #555;
+    color: #eee;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    width: 60px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<div class="app-container">
+  <!-- Title -->
+  <div class="title-area">
+    <h1>Etch-a-Sketch AI Pictionary</h1>
+    <div class="subtitle">CG2271 — Real-Time Operating Systems</div>
+  </div>
+
+  <!-- Prompt Banner -->
+  <div class="prompt-banner waiting" id="promptBanner">
+    <span class="word" id="promptWord">Waiting for prompt...</span>
+  </div>
+
+  <!-- Etch-a-Sketch -->
+  <div class="etch-frame">
+    <div class="etch-label"><span>Etch-a-Sketch</span></div>
+    <div class="screen-container">
+      <canvas id="canvas" width="128" height="128"></canvas>
+      <div class="pen-indicator">
+        <div class="pen-dot up" id="penDot"></div>
+        <span id="penLabel">PEN UP</span>
+      </div>
+    </div>
+    <div class="knobs-row">
+      <div>
+        <div class="knob"></div>
+        <div class="knob-label">X</div>
+      </div>
+      <div>
+        <div class="knob"></div>
+        <div class="knob-label">Y</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Result Panel -->
+  <div class="result-panel" id="resultPanel">
+    <div class="result-header">
+      <div class="result-icon" id="resultIcon">✓</div>
+      <div class="result-text">
+        <div class="guess-label">AI guessed</div>
+        <div class="guess-word" id="guessWord">—</div>
+      </div>
+    </div>
+    <div class="confidence-bar-container">
+      <div class="confidence-label">
+        <span>Confidence</span>
+        <span id="confValue">0/10</span>
+      </div>
+      <div class="confidence-bar">
+        <div class="confidence-fill" id="confFill" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Connection Status -->
+  <div class="status-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Disconnected</span>
+  </div>
+
+  <!-- Simulation Controls -->
+  <details class="sim-controls" open="">
+    <summary>🔧 Simulation &amp; Debug Controls</summary>
+    <div class="sim-inner">
+      <div class="sim-info">
+        No ESP32 connected? Use these to test the UI.<br>
+        Or connect via WebSocket at <b>ws://&lt;ESP32_IP&gt;/ws</b>
+      </div>
+
+      <div class="sim-input-row">
+        <label>IP:</label>
+        <input class="sim-input" id="wsIpInput" style="width:160px" placeholder="192.168.x.x">
+        <button class="sim-btn" id="connectBtn">Connect</button>
+      </div>
+
+      <div class="sim-row">
+        <button class="sim-btn" id="simDrawBtn">▶ Sim: Draw Shape</button>
+        <button class="sim-btn" id="simPromptBtn">📝 Sim: New Prompt</button>
+        <button class="sim-btn" id="simSubmitCorrectBtn">✅ Sim: Correct</button>
+        <button class="sim-btn" id="simSubmitWrongBtn">❌ Sim: Wrong</button>
+        <button class="sim-btn" id="simClearBtn">🗑 Sim: Clear</button>
+      </div>
+    </div>
+  </details>
+</div>
+
+<script>
+  // ============================================================
+  //  CONFIG
+  // ============================================================
+  const GRID = 128;
+
+  // ============================================================
+  //  CANVAS SETUP
+  // ============================================================
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#c8c8b4'; // match screen bg
+  ctx.fillRect(0, 0, GRID, GRID);
+
+  let lastX = null, lastY = null;
+  let penDown = false;
+
+  // ============================================================
+  //  DRAWING HELPERS
+  // ============================================================
+  function setPixel(x, y) {
+    if (x < 0 || x >= GRID || y < 0 || y >= GRID) return;
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(x, y, 1, 1);
+  }
+
+  // Bresenham's line algorithm — fills gaps when packets skip pixels
+  function drawLine(x0, y0, x1, y1) {
+    const dx = Math.abs(x1 - x0);
+    const dy = Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy;
+
+    while (true) {
+      setPixel(x0, y0);
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; x0 += sx; }
+      if (e2 < dx)  { err += dx; y0 += sy; }
+    }
+  }
+
+  function clearCanvas() {
+    ctx.fillStyle = '#c8c8b4';
+    ctx.fillRect(0, 0, GRID, GRID);
+    lastX = null;
+    lastY = null;
+  }
+
+  // ============================================================
+  //  UI UPDATES
+  // ============================================================
+  const promptBanner = document.getElementById('promptBanner');
+  const promptWord   = document.getElementById('promptWord');
+  const penDot       = document.getElementById('penDot');
+  const penLabel     = document.getElementById('penLabel');
+  const resultPanel  = document.getElementById('resultPanel');
+  const resultIcon   = document.getElementById('resultIcon');
+  const guessWord    = document.getElementById('guessWord');
+  const confValue    = document.getElementById('confValue');
+  const confFill     = document.getElementById('confFill');
+  const statusDot    = document.getElementById('statusDot');
+  const statusText   = document.getElementById('statusText');
+
+  function updatePen(down) {
+    penDown = down;
+    if (down) {
+      penDot.classList.remove('up');
+      penLabel.textContent = 'PEN DOWN';
+    } else {
+      penDot.classList.add('up');
+      penLabel.textContent = 'PEN UP';
+      lastX = null; lastY = null; // break the line chain
+    }
+  }
+
+  function showPrompt(word) {
+    promptBanner.classList.remove('waiting');
+    promptWord.textContent = word;
+    resultPanel.classList.remove('show');
+  }
+
+  function showResult(guess, confidence, correct) {
+    resultPanel.classList.add('show');
+    guessWord.textContent = guess;
+    confValue.textContent = confidence + '/10';
+
+    const pct = (confidence / 10) * 100;
+    confFill.style.width = pct + '%';
+    confFill.classList.remove('low', 'mid');
+    if (confidence <= 3) confFill.classList.add('low');
+    else if (confidence <= 6) confFill.classList.add('mid');
+
+    if (correct) {
+      resultIcon.textContent = '✓';
+      resultIcon.className = 'result-icon correct';
+    } else {
+      resultIcon.textContent = '✗';
+      resultIcon.className = 'result-icon wrong';
+    }
+  }
+
+  function setStatus(state, msg) {
+    statusDot.className = 'status-dot' + (state === 'ok' ? ' connected' : state === 'err' ? ' error' : '');
+    statusText.textContent = msg || (state === 'ok' ? 'Connected' : 'Disconnected');
+  }
+
+  // ============================================================
+  //  HANDLE INCOMING MESSAGE (from WebSocket or simulation)
+  // ============================================================
+  function handleMessage(data) {
+    /*
+      Expected JSON formats:
+        { "type": "move",   "x": 0-127, "y": 0-127, "penDown": bool }
+        { "type": "clear" }
+        { "type": "result", "guess": "cat", "confidence": 7, "correct": true }
+        { "type": "prompt", "word": "bicycle" }
+    */
+    switch (data.type) {
+      case 'move': {
+        const x = Math.max(0, Math.min(GRID - 1, data.x));
+        const y = Math.max(0, Math.min(GRID - 1, data.y));
+
+        if (data.penDown !== undefined) updatePen(data.penDown);
+
+        if (penDown) {
+          if (lastX !== null && lastY !== null) {
+            drawLine(lastX, lastY, x, y);
+          } else {
+            setPixel(x, y);
+          }
+        }
+        lastX = x;
+        lastY = y;
+        break;
+      }
+      case 'clear':
+        clearCanvas();
+        break;
+      case 'result':
+        showResult(data.guess, data.confidence, data.correct);
+        break;
+      case 'prompt':
+        showPrompt(data.word);
+        break;
+      default:
+        console.warn('Unknown message type:', data.type);
+    }
+  }
+
+  // ============================================================
+  //  WEBSOCKET CONNECTION
+  // ============================================================
+  let ws = null;
+
+  function connectWS(ip) {
+    if (ws) { ws.close(); ws = null; }
+    const url = 'ws://' + ip + '/ws';
+    setStatus('', 'Connecting to ' + url + '...');
+
+    ws = new WebSocket(url);
+    ws.onopen = () => setStatus('ok', 'Connected to ' + ip);
+    ws.onclose = () => setStatus('', 'Disconnected');
+    ws.onerror = () => setStatus('err', 'Connection failed');
+    ws.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data);
+        handleMessage(data);
+      } catch (e) {
+        console.warn('Bad message:', evt.data, e);
+      }
+    };
+  }
+
+  document.getElementById('connectBtn').addEventListener('click', () => {
+    const ip = document.getElementById('wsIpInput').value.trim();
+    if (ip) connectWS(ip);
+  });
+
+  // ============================================================
+  //  SIMULATION HELPERS (for testing without ESP32)
+  // ============================================================
+  const sampleWords = ['cat', 'house', 'bicycle', 'tree', 'sun', 'fish', 'car', 'boat', 'star', 'flower'];
+
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  // Simulate drawing a simple shape
+  async function simDraw() {
+    handleMessage({ type: 'clear' });
+    updatePen(true);
+
+    // draw a little star-ish shape in the center
+    const cx = 64, cy = 64, r = 30;
+    const points = [];
+    for (let i = 0; i < 10; i++) {
+      const angle = (Math.PI * 2 * i) / 10 - Math.PI / 2;
+      const dist = i % 2 === 0 ? r : r * 0.45;
+      points.push([
+        Math.round(cx + Math.cos(angle) * dist),
+        Math.round(cy + Math.sin(angle) * dist)
+      ]);
+    }
+    points.push(points[0]); // close shape
+
+    for (let i = 0; i < points.length; i++) {
+      handleMessage({ type: 'move', x: points[i][0], y: points[i][1], penDown: true });
+      await sleep(80);
+    }
+    updatePen(false);
+  }
+
+  document.getElementById('simDrawBtn').addEventListener('click', simDraw);
+
+  document.getElementById('simPromptBtn').addEventListener('click', () => {
+    const w = sampleWords[Math.floor(Math.random() * sampleWords.length)];
+    handleMessage({ type: 'prompt', word: w });
+  });
+
+  document.getElementById('simSubmitCorrectBtn').addEventListener('click', () => {
+    const w = sampleWords[Math.floor(Math.random() * sampleWords.length)];
+    handleMessage({ type: 'result', guess: w, confidence: 7 + Math.floor(Math.random() * 4), correct: true });
+  });
+
+  document.getElementById('simSubmitWrongBtn').addEventListener('click', () => {
+    const w = sampleWords[Math.floor(Math.random() * sampleWords.length)];
+    handleMessage({ type: 'result', guess: w, confidence: 1 + Math.floor(Math.random() * 5), correct: false });
+  });
+
+  document.getElementById('simClearBtn').addEventListener('click', () => {
+    handleMessage({ type: 'clear' });
+    resultPanel.classList.remove('show');
+    promptBanner.classList.add('waiting');
+    promptWord.textContent = 'Waiting for prompt...';
+  });
+</script>
+
+
+
+</body></html>
