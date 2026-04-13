@@ -1017,9 +1017,14 @@ static bool app_ws_handle_text_command(const char *payload)
 
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
     bool handled = false;
-    if (cJSON_IsString(type) && type->valuestring != NULL && strcmp(type->valuestring, "api_test") == 0) {
-        app_enqueue_api_test_event();
-        handled = true;
+    if (cJSON_IsString(type) && type->valuestring != NULL) {
+        if (strcmp(type->valuestring, "api_test") == 0) {
+            app_enqueue_api_test_event();
+            handled = true;
+        } else if (strcmp(type->valuestring, "prompt_request") == 0) {
+            app_enqueue_prompt_request_event();
+            handled = true;
+        }
     }
 
     cJSON_Delete(root);

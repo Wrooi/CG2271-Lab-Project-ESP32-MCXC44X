@@ -559,7 +559,7 @@ esp_err_t app_api_submit_drawing(const char *payload,
         "Step 1: Notice the geometric shapes or lines formed by the '#' characters. "
         "Step 2: Are the shapes coherent? E.g., three connected sides is a triangle; two stacked circles might be an 8. "
         "Step 3: If it is completely blank, return 0. If it is a completely random squiggle or noise with no cohesive geometry, score 1-3. "
-        "Step 4: If it clearly forms the basic shape or number '%s', return a confidence score of >= 8. "
+        "Step 4: If it clearly forms the basic shape, letter, or number '%s', return a confidence score of >= 8. "
         "Return ONLY valid JSON: {\"guess\":\"<what_it_looks_like>\",\"confidence\":<0-10>}";
 
     char formatted_instruction[1024];
@@ -719,7 +719,7 @@ esp_err_t app_api_fetch_and_publish_prompt(app_api_send_frame_fn send_frame,
         cJSON_AddStringToObject(message, "role", "user");
         cJSON_AddStringToObject(message,
                                 "content",
-                                "Give me one simple Pictionary noun. Respond ONLY with JSON: {\"word\":\"<noun>\"}");
+                                "Randomly pick one item from this list: a single digit number (0-9), a single uppercase letter (A-Z), or a basic geometric shape (like triangle, square, circle, star). Respond ONLY with JSON: {\"word\":\"<selection>\"}");
         cJSON_AddItemToArray(messages, message);
         cJSON_AddItemToObject(root, "messages", messages);
 
@@ -729,11 +729,16 @@ esp_err_t app_api_fetch_and_publish_prompt(app_api_send_frame_fn send_frame,
             return ESP_ERR_NO_MEM;
         }
 
-        char http_response[APP_HTTP_RESPONSE_BUFFER_SIZE];
+        char *http_response = (char *)malloc(APP_HTTP_RESPONSE_BUFFER_SIZE);
+        if (http_response == NULL) {
+            free(request_body);
+            return ESP_ERR_NO_MEM;
+        }
+
         const esp_err_t prompt_err = app_http_post_json("https://api.openai.com/v1/chat/completions",
                                                         request_body,
                                                         http_response,
-                                                        sizeof(http_response));
+                                                        APP_HTTP_RESPONSE_BUFFER_SIZE);
         free(request_body);
         if (prompt_err == ESP_OK) {
             char content[APP_AI_CONTENT_BUFFER_SIZE];
@@ -747,6 +752,7 @@ esp_err_t app_api_fetch_and_publish_prompt(app_api_send_frame_fn send_frame,
         } else {
             ESP_LOGW(TAG, "Prompt fetch failed: %s", esp_err_to_name(prompt_err));
         }
+        free(http_response);
     }
 
     char prompt_json[128];
