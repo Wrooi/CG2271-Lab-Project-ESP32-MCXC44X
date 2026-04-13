@@ -665,6 +665,11 @@ static bool app_uart_read_packet_line(char *out_packet, size_t out_packet_len)
 
 static esp_err_t app_socket_send_frame(const char *payload, size_t payload_len)
 {
+#if !CONFIG_HTTPD_WS_SUPPORT
+    (void)payload;
+    (void)payload_len;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
     if (payload == NULL || payload_len == 0U) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -675,12 +680,6 @@ static esp_err_t app_socket_send_frame(const char *payload, size_t payload_len)
             return start_err;
         }
     }
-
-#if !CONFIG_HTTPD_WS_SUPPORT
-    (void)payload;
-    (void)payload_len;
-    return ESP_ERR_NOT_SUPPORTED;
-#else
     size_t fds_count = APP_WS_MAX_CLIENT_FDS;
     int client_fds[APP_WS_MAX_CLIENT_FDS] = {0};
     esp_err_t err = httpd_get_client_list(s_ws_server, &fds_count, client_fds);
@@ -1117,15 +1116,6 @@ void app_main(void)
              APP_RTOS_CONFIG.socket_dispatch_task_name,
              APP_RTOS_CONFIG.framebuffer_task_name);
 
-    const esp_err_t prompt_init_err = app_api_fetch_and_publish_prompt(app_socket_send_frame,
-                                                                       s_active_prompt_word,
-                                                                       sizeof(s_active_prompt_word));
-    if (prompt_init_err != ESP_OK) {
-        ESP_LOGW(TAG, "Initial prompt fetch/publish failed: %s", esp_err_to_name(prompt_init_err));
-    } else {
-        const esp_err_t notify_err = app_send_mcu_prompt_ready();
-        if (notify_err != ESP_OK) {
-            ESP_LOGW(TAG, "Initial PROMPT ready command failed: %s", esp_err_to_name(notify_err));
-        }
-    }
+    // Note: Initial prompt fetch is deferred until after FreeRTOS scheduler is fully ready.
+    // Default prompt "house" will be used until user requests a new prompt via button.
 }
