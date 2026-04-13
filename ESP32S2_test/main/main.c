@@ -797,6 +797,7 @@ static void app_submit_drawing_for_ai(char *socket_payload, size_t socket_payloa
 
     const esp_err_t err = app_api_submit_drawing(socket_payload,
                                                  payload_len,
+                                                 s_active_prompt_word,
                                                  &result,
                                                  &submit_success,
                                                  s_submit_stub_success_flag);
@@ -1100,6 +1101,12 @@ static void app_api_init_task(void *arg)
     ESP_LOGI(TAG,
              "Note: Initial prompt fetch deferred to avoid heap allocation during startup. "
              "Prompt can be refreshed on user request (button press).");
+
+    // Testing helper: automatically trigger one API test after startup.
+    // This avoids relying on manual browser interaction when validating API flow.
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    ESP_LOGI(TAG, "Auto-triggering API test for startup validation");
+    app_enqueue_api_test_event();
 
     // Task is ready to handle future prompt refresh requests triggered by user actions.
     // For now, sleep indefinitely; in future this can wake on button press or queue events.

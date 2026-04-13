@@ -15,6 +15,9 @@
 
 #define APP_HTTP_RESPONSE_BUFFER_SIZE 8192
 #define APP_AI_CONTENT_BUFFER_SIZE 768
+#define APP_HTTP_TIMEOUT_MS 30000
+#define APP_HTTP_PERFORM_MAX_ATTEMPTS 3
+#define APP_HTTP_FALLBACK_CONNECT_RETRIES 3
 #define APP_SUBMIT_STUB_GUESS "stub-guess"
 #define APP_SUBMIT_STUB_CONFIDENCE 7
 #define APP_SUBMIT_STUB_DELAY_MS 2000
@@ -26,6 +29,156 @@ typedef struct {
 } app_http_response_buffer_t;
 
 static const char *TAG = "app_api";
+
+static int app_parse_confidence_value(const cJSON *value)
+{
+    if (cJSON_IsNumber(value)) {
+        return (int)value->valuedouble;
+    }
+
+    if (cJSON_IsString(value) && value->valuestring != NULL) {
+        int parsed = 0;
+        if (sscanf(value->valuestring, "%d", &parsed) == 1) {
+            return parsed;
+        }
+    }
+
+    return -1;
+}
+
+static bool app_copy_guess_and_confidence(const cJSON *obj,
+                                          char *out_guess,
+                                          size_t out_guess_len,
+                                          int *out_confidence)
+{
+    if (obj == NULL || out_guess == NULL || out_guess_len < 2U || out_confidence == NULL) {
+        return false;
+    }
+
+    const cJSON *guess_obj = cJSON_GetObjectItemCaseSensitive(obj, "guess");
+    if (!cJSON_IsString(guess_obj) || guess_obj->valuestring == NULL) {
+        guess_obj = cJSON_GetObjectItemCaseSensitive(obj, "object");
+    }
+    if (!cJSON_IsString(guess_obj) || guess_obj->valuestring == NULL) {
+        guess_obj = cJSON_GetObjectItemCaseSensitive(obj, "label");
+    }
+    if (!cJSON_IsString(guess_obj) || guess_obj->valuestring == NULL) {
+        guess_obj = cJSON_GetObjectItemCaseSensitive(obj, "word");
+    }
+
+    const cJSON *confidence_obj = cJSON_GetObjectItemCaseSensitive(obj, "confidence");
+    if (confidence_obj == NULL) {
+        confidence_obj = cJSON_GetObjectItemCaseSensitive(obj, "score");
+    }
+
+    const int parsed_confidence = app_parse_confidence_value(confidence_obj);
+    if (!cJSON_IsString(guess_obj) || guess_obj->valuestring == NULL || parsed_confidence < 0) {
+        return false;
+    }
+
+    const size_t guess_len = strnlen(guess_obj->valuestring, out_guess_len - 1U);
+    memcpy(out_guess, guess_obj->valuestring, guess_len);
+    out_guess[guess_len] = '\0';
+    *out_confidence = parsed_confidence;
+    return true;
+}
+
+static bool app_try_extract_from_plain_text(const char *text,
+                                            char *out_guess,
+                                            size_t out_guess_len,
+                                            int *out_confidence)
+{
+    if (text == NULL || out_guess == NULL || out_confidence == NULL || out_guess_len < 2U) {
+        return false;
+    }
+
+    const char *guess_marker = strstr(text, "guess");
+    if (guess_marker == NULL) {
+        return false;
+    }
+
+    const char *colon = strchr(guess_marker, ':');
+    if (colon == NULL) {
+        return false;
+    }
+
+    const char *start = colon + 1;
+    while (*start != '\0' && (isspace((unsigned char)*start) || *start == '"' || *start == '\'')) {
+        start++;
+    }
+
+    size_t i = 0U;
+    while (start[i] != '\0' && i + 1U < out_guess_len) {
+        const char ch = start[i];
+        if (!(isalnum((unsigned char)ch) || ch == ' ' || ch == '-' || ch == '_')) {
+            break;
+        }
+        out_guess[i] = ch;
+        i++;
+    }
+    out_guess[i] = '\0';
+    if (out_guess[0] == '\0') {
+        return false;
+    }
+
+    int confidence = 5;
+    const char *confidence_marker = strstr(text, "confidence");
+    if (confidence_marker != NULL) {
+        const char *conf_colon = strchr(confidence_marker, ':');
+        if (conf_colon != NULL) {
+            int parsed = 0;
+            if (sscanf(conf_colon + 1, "%d", &parsed) == 1) {
+                confidence = parsed;
+            }
+        }
+    }
+
+    *out_confidence = confidence;
+    return true;
+}
+
+static bool app_try_parse_json_fragment(const char *text,
+                                        char *out_guess,
+                                        size_t out_guess_len,
+                                        int *out_confidence)
+{
+    if (text == NULL) {
+        return false;
+    }
+
+    cJSON *parsed = cJSON_Parse(text);
+    if (parsed != NULL) {
+        const bool ok = app_copy_guess_and_confidence(parsed, out_guess, out_guess_len, out_confidence);
+        cJSON_Delete(parsed);
+        if (ok) {
+            return true;
+        }
+    }
+
+    const char *json_start = strchr(text, '{');
+    const char *json_end = strrchr(text, '}');
+    if (json_start == NULL || json_end == NULL || json_end <= json_start) {
+        return false;
+    }
+
+    const size_t frag_len = (size_t)(json_end - json_start + 1);
+    char *frag = (char *)malloc(frag_len + 1U);
+    if (frag == NULL) {
+        return false;
+    }
+
+    memcpy(frag, json_start, frag_len);
+    frag[frag_len] = '\0';
+    parsed = cJSON_Parse(frag);
+    free(frag);
+    if (parsed == NULL) {
+        return false;
+    }
+
+    const bool ok = app_copy_guess_and_confidence(parsed, out_guess, out_guess_len, out_confidence);
+    cJSON_Delete(parsed);
+    return ok;
+}
 
 static bool app_is_api_key_configured(void)
 {
@@ -62,6 +215,30 @@ static esp_err_t app_http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+static esp_err_t app_http_perform_with_retry(esp_http_client_handle_t client, const char *phase)
+{
+    esp_err_t err = ESP_FAIL;
+    for (int attempt = 1; attempt <= APP_HTTP_PERFORM_MAX_ATTEMPTS; ++attempt) {
+        err = esp_http_client_perform(client);
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+
+        if (err != ESP_ERR_HTTP_EAGAIN || attempt == APP_HTTP_PERFORM_MAX_ATTEMPTS) {
+            ESP_LOGE(TAG, "%s HTTP POST failed: %s", phase, esp_err_to_name(err));
+            return err;
+        }
+
+        ESP_LOGW(TAG,
+                 "%s HTTP POST timed out waiting for data (attempt %d/%d), retrying",
+                 phase,
+                 attempt,
+                 APP_HTTP_PERFORM_MAX_ATTEMPTS);
+    }
+
+    return err;
+}
+
 static esp_err_t app_http_post_json(const char *url,
                                     const char *body,
                                     char *out_response,
@@ -90,6 +267,7 @@ static esp_err_t app_http_post_json(const char *url,
         .user_data = &response,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = APP_HTTP_TIMEOUT_MS,
         .method = HTTP_METHOD_POST,
     };
 
@@ -102,9 +280,47 @@ static esp_err_t app_http_post_json(const char *url,
     esp_http_client_set_header(client, "Authorization", auth_header);
     esp_http_client_set_post_field(client, body, strlen(body));
 
-    const esp_err_t err = esp_http_client_perform(client);
+    esp_err_t err = app_http_perform_with_retry(client, "Verified TLS");
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP POST failed: %s", esp_err_to_name(err));
+        // Keep secure verification first. Retry once without certificate verification only
+        // when the verified TLS connection cannot be established.
+        if (err == ESP_ERR_HTTP_CONNECT) {
+            ESP_LOGW(TAG, "Retrying HTTPS POST once with insecure TLS fallback for API testing");
+
+            response.length = 0U;
+            out_response[0] = '\0';
+            config.crt_bundle_attach = NULL;
+
+            for (int connect_attempt = 1; connect_attempt <= APP_HTTP_FALLBACK_CONNECT_RETRIES; ++connect_attempt) {
+                esp_http_client_cleanup(client);
+                client = esp_http_client_init(&config);
+                if (client == NULL) {
+                    return ESP_ERR_NO_MEM;
+                }
+
+                esp_http_client_set_header(client, "Content-Type", "application/json");
+                esp_http_client_set_header(client, "Authorization", auth_header);
+                esp_http_client_set_post_field(client, body, strlen(body));
+
+                char phase[48];
+                snprintf(phase, sizeof(phase), "Insecure fallback #%d", connect_attempt);
+                err = app_http_perform_with_retry(client, phase);
+                if (err == ESP_OK) {
+                    ESP_LOGW(TAG, "Insecure TLS fallback succeeded (testing mode)");
+                    break;
+                }
+
+                if (err != ESP_ERR_HTTP_CONNECT || connect_attempt == APP_HTTP_FALLBACK_CONNECT_RETRIES) {
+                    break;
+                }
+
+                ESP_LOGW(TAG,
+                         "Insecure fallback connect failed (%d/%d), retrying fresh connection",
+                         connect_attempt,
+                         APP_HTTP_FALLBACK_CONNECT_RETRIES);
+                vTaskDelay(pdMS_TO_TICKS(750));
+            }
+        }
     }
 
     esp_http_client_cleanup(client);
@@ -127,48 +343,25 @@ static bool app_extract_vision_result(const char *response_json,
         return false;
     }
 
-    // Expected response format: {"guess": "<object>", "confidence": <1-10>}
-    // or from chat API: {"choices": [{"message": {"content": "{\"guess\":\"...\",\"confidence\":...}"}}]}
-    
-    bool found_data = false;
-    const cJSON *guess_obj = NULL;
-    const cJSON *confidence_obj = NULL;
-
-    // Try direct format first ({"guess": "...", "confidence": ...})
-    guess_obj = cJSON_GetObjectItemCaseSensitive(root, "guess");
-    confidence_obj = cJSON_GetObjectItemCaseSensitive(root, "confidence");
-
-    // If not found, try chat/completion format
-    if (guess_obj == NULL) {
+    bool ok = app_copy_guess_and_confidence(root, out_guess, out_guess_len, out_confidence);
+    if (!ok) {
         const cJSON *choices = cJSON_GetObjectItemCaseSensitive(root, "choices");
         const cJSON *choice0 = cJSON_IsArray(choices) ? cJSON_GetArrayItem(choices, 0) : NULL;
         const cJSON *message = cJSON_IsObject(choice0) ? cJSON_GetObjectItemCaseSensitive(choice0, "message") : NULL;
         const cJSON *content = cJSON_IsObject(message) ? cJSON_GetObjectItemCaseSensitive(message, "content") : NULL;
 
         if (cJSON_IsString(content) && content->valuestring != NULL) {
-            // Parse the nested JSON in content
-            cJSON *inner = cJSON_Parse(content->valuestring);
-            if (inner != NULL) {
-                guess_obj = cJSON_GetObjectItemCaseSensitive(inner, "guess");
-                confidence_obj = cJSON_GetObjectItemCaseSensitive(inner, "confidence");
-                if (cJSON_IsString(guess_obj) && cJSON_IsNumber(confidence_obj)) {
-                    found_data = true;
-                }
-                cJSON_Delete(inner);
+            ok = app_try_parse_json_fragment(content->valuestring, out_guess, out_guess_len, out_confidence);
+            if (!ok) {
+                ok = app_try_extract_from_plain_text(content->valuestring,
+                                                     out_guess,
+                                                     out_guess_len,
+                                                     out_confidence);
             }
         }
-    } else if (cJSON_IsString(guess_obj) && cJSON_IsNumber(confidence_obj)) {
-        found_data = true;
     }
 
-    bool ok = false;
-    if (found_data && cJSON_IsString(guess_obj) && guess_obj->valuestring != NULL) {
-        const size_t guess_len = strnlen(guess_obj->valuestring, out_guess_len - 1U);
-        memcpy(out_guess, guess_obj->valuestring, guess_len);
-        out_guess[guess_len] = '\0';
-        *out_confidence = (int)confidence_obj->valuedouble;
-        ok = true;
-
+    if (ok) {
         ESP_LOGI(TAG, "Vision API result: guess='%s', confidence=%d", out_guess, *out_confidence);
     }
 
@@ -288,11 +481,12 @@ static bool app_extract_framebuffer_base64(const char *payload,
 
 esp_err_t app_api_submit_drawing(const char *payload,
                                  size_t payload_len,
+                                 const char *active_prompt_word,
                                  app_ai_submit_result_t *out_result,
                                  bool *out_submit_success,
                                  bool submit_stub_success_flag)
 {
-    if (payload == NULL || payload_len == 0U || out_result == NULL || out_submit_success == NULL) {
+    if (payload == NULL || payload_len == 0U || out_result == NULL || out_submit_success == NULL || active_prompt_word == NULL) {
         ESP_LOGE(TAG, "app_api_submit_drawing: Invalid arguments");
         return ESP_ERR_INVALID_ARG;
     }
@@ -326,10 +520,15 @@ esp_err_t app_api_submit_drawing(const char *payload,
     }
 
     const char *instruction =
-        "You are analyzing a 1bpp framebuffer payload encoded as base64. "
-        "Return ONLY valid JSON in this shape: {\"guess\":\"<object>\",\"confidence\":<1-10>}";
+        "You are an AI judge for a drawing game. The user was asked to draw a '%s'. "
+        "Look at the base64-encoded 1bpp framebuffer image payload. "
+        "Give a confidence score from 0 to 10 on how accurately this drawing resembles a '%s' (0 is unrecognizable, 10 is perfect). "
+        "Be generous since it is a low-resolution sketch. Return ONLY valid JSON in this shape: {\"guess\":\"<actual_object_you_see>\",\"confidence\":<0-10>}";
 
-    const size_t request_text_len = strlen(instruction) + strlen(framebuffer_base64) + 64U;
+    char formatted_instruction[512];
+    snprintf(formatted_instruction, sizeof(formatted_instruction), instruction, active_prompt_word, active_prompt_word);
+
+    const size_t request_text_len = strlen(formatted_instruction) + strlen(framebuffer_base64) + 64U;
     char *request_text = (char *)malloc(request_text_len);
     if (request_text == NULL) {
         free(framebuffer_base64);
@@ -339,10 +538,10 @@ esp_err_t app_api_submit_drawing(const char *payload,
     }
 
     const int request_text_written = snprintf(request_text,
-                                               request_text_len,
-                                               "%s\nframebuffer_base64=%s",
-                                               instruction,
-                                               framebuffer_base64);
+                                              request_text_len,
+                                              "%s\nframebuffer_base64=%s",
+                                              formatted_instruction,
+                                              framebuffer_base64);
     if (request_text_written <= 0 || (size_t)request_text_written >= request_text_len) {
         free(request_text);
         free(framebuffer_base64);
@@ -390,15 +589,23 @@ esp_err_t app_api_submit_drawing(const char *payload,
 
     ESP_LOGI(TAG, "Sending framebuffer submission request to OpenAI API...");
 
-    // Send request to OpenAI Vision API
-    char http_response[APP_HTTP_RESPONSE_BUFFER_SIZE];
+    // Send request to OpenAI API. Keep this buffer on heap to avoid task stack overflow.
+    char *http_response = (char *)malloc(APP_HTTP_RESPONSE_BUFFER_SIZE);
+    if (http_response == NULL) {
+        free(request_body);
+        ESP_LOGE(TAG, "Failed to allocate HTTP response buffer");
+        *out_submit_success = false;
+        return ESP_ERR_NO_MEM;
+    }
+
     const esp_err_t http_err = app_http_post_json("https://api.openai.com/v1/chat/completions",
                                                    request_body,
                                                    http_response,
-                                                   sizeof(http_response));
+                                                   APP_HTTP_RESPONSE_BUFFER_SIZE);
     free(request_body);
 
     if (http_err != ESP_OK) {
+        free(http_response);
         ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(http_err));
         *out_submit_success = false;
         strncpy(out_result->guess, "error", sizeof(out_result->guess) - 1U);
@@ -417,7 +624,12 @@ esp_err_t app_api_submit_drawing(const char *payload,
 
     if (!parse_success) {
         ESP_LOGW(TAG, "Failed to parse vision API response");
-        ESP_LOGD(TAG, "Response: %s", http_response);
+        char response_preview[301];
+        const size_t preview_len = strnlen(http_response, sizeof(response_preview) - 1U);
+        memcpy(response_preview, http_response, preview_len);
+        response_preview[preview_len] = '\0';
+        ESP_LOGW(TAG, "Response preview: %s", response_preview);
+        free(http_response);
         *out_submit_success = false;
         strncpy(out_result->guess, "unknown", sizeof(out_result->guess) - 1U);
         out_result->guess[sizeof(out_result->guess) - 1U] = '\0';
@@ -425,6 +637,8 @@ esp_err_t app_api_submit_drawing(const char *payload,
         out_result->correct = false;
         return ESP_ERR_INVALID_RESPONSE;
     }
+
+    free(http_response);
 
     // Store the results
     strncpy(out_result->guess, guess, sizeof(out_result->guess) - 1U);

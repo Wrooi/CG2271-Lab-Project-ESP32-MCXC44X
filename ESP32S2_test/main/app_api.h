@@ -22,6 +22,7 @@ typedef esp_err_t (*app_api_send_frame_fn)(const char *payload, size_t payload_l
 
 esp_err_t app_api_submit_drawing(const char *payload,
                                  size_t payload_len,
+                                 const char *active_prompt_word,
                                  app_ai_submit_result_t *out_result,
                                  bool *out_submit_success,
                                  bool submit_stub_success_flag);
