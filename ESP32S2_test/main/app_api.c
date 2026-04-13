@@ -525,7 +525,7 @@ esp_err_t app_api_submit_drawing(const char *payload,
         "Give a confidence score from 0 to 10 on how accurately this drawing resembles a '%s' (0 is unrecognizable, 10 is perfect). "
         "Be generous since it is a low-resolution sketch. Return ONLY valid JSON in this shape: {\"guess\":\"<actual_object_you_see>\",\"confidence\":<0-10>}";
 
-    char formatted_instruction[512];
+    char formatted_instruction[1024];
     snprintf(formatted_instruction, sizeof(formatted_instruction), instruction, active_prompt_word, active_prompt_word);
 
     const size_t request_text_len = strlen(formatted_instruction) + strlen(framebuffer_base64) + 64U;
@@ -644,14 +644,15 @@ esp_err_t app_api_submit_drawing(const char *payload,
     strncpy(out_result->guess, guess, sizeof(out_result->guess) - 1U);
     out_result->guess[sizeof(out_result->guess) - 1U] = '\0';
     out_result->confidence = (confidence < 1) ? 1 : (confidence > 10) ? 10 : confidence;
-    out_result->correct = true;
+    out_result->correct = (out_result->confidence >= 6);
 
     *out_submit_success = true;
 
     ESP_LOGI(TAG,
-             "Framebuffer submission successful: guess='%s', confidence=%d",
+             "Framebuffer submission successful: guess='%s', confidence=%d, correct=%d",
              out_result->guess,
-             out_result->confidence);
+             out_result->confidence,
+             out_result->correct);
 
     return ESP_OK;
 }
