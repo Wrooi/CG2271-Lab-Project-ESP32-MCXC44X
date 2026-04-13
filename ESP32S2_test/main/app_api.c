@@ -605,7 +605,7 @@ esp_err_t app_api_submit_drawing(const char *payload,
         return ESP_ERR_NO_MEM;
     }
 
-    cJSON_AddStringToObject(request, "model", "gpt-4o-mini");
+    cJSON_AddStringToObject(request, "model", "gpt-5.4");
     cJSON_AddNumberToObject(request, "temperature", 0);
     cJSON_AddStringToObject(response_format, "type", "json_object");
     cJSON_AddItemToObject(request, "response_format", response_format);
