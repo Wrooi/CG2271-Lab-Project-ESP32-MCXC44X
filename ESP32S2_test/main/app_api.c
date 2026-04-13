@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "secrets.h"
+#include "mbedtls/base64.h"
 
 #define APP_HTTP_RESPONSE_BUFFER_SIZE 8192
 #define APP_AI_CONTENT_BUFFER_SIZE 768
@@ -519,18 +520,52 @@ esp_err_t app_api_submit_drawing(const char *payload,
         framebuffer_base64[fallback_len] = '\0';
     }
 
+    uint8_t raw_fb[2048] = {0};
+    size_t raw_len = 0;
+    mbedtls_base64_decode(raw_fb, sizeof(raw_fb), &raw_len, (const unsigned char *)framebuffer_base64, strlen(framebuffer_base64));
+
+    // Convert 128x128 1bpp raw framebuffer to a 32x32 ASCII grid
+    char ascii_art[1088] = {0}; // 32 * 32 + 32 newlines + 1 null = 1057
+    size_t ascii_idx = 0;
+    for (int dy = 0; dy < 32; dy++) {
+        for (int dx = 0; dx < 32; dx++) {
+            bool drawn = false;
+            for (int py = 0; py < 4; py++) {
+                for (int px = 0; px < 4; px++) {
+                    int x = dx * 4 + px;
+                    int y = dy * 4 + py;
+                    int bit_index = y * 128 + x;
+                    int byte_index = bit_index / 8;
+                    int bit_mask = 0x80 >> (bit_index % 8);
+                    if (raw_fb[byte_index] & bit_mask) {
+                        drawn = true;
+                        break;
+                    }
+                }
+                if (drawn) break;
+            }
+            ascii_art[ascii_idx++] = drawn ? '#' : '.';
+        }
+        ascii_art[ascii_idx++] = '\n';
+    }
+    ascii_art[ascii_idx] = '\0';
+
+    ESP_LOGI(TAG, "Debugging Generated 32x32 ASCII Art sent to LLM:\n%s", ascii_art);
+
     const char *instruction =
-        "You are an AI judge for a Pictionary-style drawing game. The user was asked to draw a '%s'. "
-        "Look at the base64-encoded 1bpp framebuffer image payload. "
-        "Give a confidence score from 0 to 10 on how recognizable the drawing is. "
-        "Basic, iconic abstractions (e.g., a triangle roof on a square for a house, or stick figures) ARE correct and should score 6 to 10. "
-        "Random lines, unrecognizable blobs, or low-effort squiggles that do not resemble the target must score between 0 and 4. "
-        "Return ONLY valid JSON in this shape: {\"guess\":\"<actual_object_you_see>\",\"confidence\":<0-10>}";
+        "You are an AI judge for a Pictionary-style drawing game testing if a user successfully drew a '%s'. "
+        "I am sharing a 32x32 ASCII art representation of their drawing. "
+        "Pixels drawn are '#' and empty background is '.'. "
+        "Step 1: Notice the geometric shapes or lines formed by the '#' characters. "
+        "Step 2: Are the shapes coherent? E.g., three connected sides is a triangle; two stacked circles might be an 8. "
+        "Step 3: If it is completely blank, return 0. If it is a completely random squiggle or noise with no cohesive geometry, score 1-3. "
+        "Step 4: If it clearly forms the basic shape or number '%s', return a confidence score of >= 8. "
+        "Return ONLY valid JSON: {\"guess\":\"<what_it_looks_like>\",\"confidence\":<0-10>}";
 
     char formatted_instruction[1024];
     snprintf(formatted_instruction, sizeof(formatted_instruction), instruction, active_prompt_word, active_prompt_word);
 
-    const size_t request_text_len = strlen(formatted_instruction) + strlen(framebuffer_base64) + 64U;
+    const size_t request_text_len = strlen(formatted_instruction) + strlen(ascii_art) + 64U;
     char *request_text = (char *)malloc(request_text_len);
     if (request_text == NULL) {
         free(framebuffer_base64);
@@ -541,9 +576,9 @@ esp_err_t app_api_submit_drawing(const char *payload,
 
     const int request_text_written = snprintf(request_text,
                                               request_text_len,
-                                              "%s\nframebuffer_base64=%s",
+                                              "%s\nASCII_ART:\n%s",
                                               formatted_instruction,
-                                              framebuffer_base64);
+                                              ascii_art);
     if (request_text_written <= 0 || (size_t)request_text_written >= request_text_len) {
         free(request_text);
         free(framebuffer_base64);

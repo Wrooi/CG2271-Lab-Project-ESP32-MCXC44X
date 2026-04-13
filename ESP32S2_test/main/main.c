@@ -150,7 +150,7 @@ static bool s_submit_stub_success_flag = true;
 static esp_err_t app_socket_send_frame(const char *payload, size_t payload_len);
 static bool app_ws_handle_text_command(const char *payload);
 
-static char s_active_prompt_word[APP_API_PROMPT_WORD_BUFFER_SIZE] = "house";
+static char s_active_prompt_word[APP_API_PROMPT_WORD_BUFFER_SIZE] = "triangle";
 
 static esp_err_t app_send_mcu_command(const char *command, int value)
 {
@@ -817,6 +817,11 @@ static void app_submit_drawing_for_ai(char *socket_payload, size_t socket_payloa
     if (!submit_success) {
         ESP_LOGW(TAG, "Submit processing failed; waiting for next explicit prompt request");
     }
+
+    // Reset ESP32 framebuffer for the next drawing and notify UI to clear local canvas:
+    image_framebuffer_clear(&s_framebuffer);
+    const char *clear_cmd = "{\"type\":\"clear\"}";
+    app_socket_send_frame(clear_cmd, strlen(clear_cmd));
 }
 
 static void app_enqueue_framebuffer_state(const image_input_state_t *state)
@@ -982,7 +987,7 @@ static void app_process_framebuffer_event(const framebuffer_state_msg_t *msg,
     }
 
     if (msg->type == FRAMEBUFFER_EVENT_API_TEST) {
-        image_framebuffer_fill_test_pattern(&s_framebuffer);
+        image_framebuffer_clear(&s_framebuffer); // Clear it instead of filling test pattern.
         ESP_LOGI(TAG, "API test pattern prepared; submitting framebuffer to OpenAI");
         app_submit_drawing_for_ai(socket_payload, socket_payload_len);
         return;
@@ -1110,8 +1115,8 @@ static void app_api_init_task(void *arg)
     // Testing helper: automatically trigger one API test after startup.
     // This avoids relying on manual browser interaction when validating API flow.
     vTaskDelay(pdMS_TO_TICKS(1500));
-    ESP_LOGI(TAG, "Auto-triggering API test for startup validation");
-    app_enqueue_api_test_event();
+    // ESP_LOGI(TAG, "Auto-triggering API test for startup validation");
+    // app_enqueue_api_test_event();
 
     // Task is ready to handle future prompt refresh requests triggered by user actions.
     // For now, sleep indefinitely; in future this can wake on button press or queue events.
