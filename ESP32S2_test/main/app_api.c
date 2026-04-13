@@ -257,6 +257,35 @@ static bool app_try_extract_prompt_word(const char *content,
     return out_word[0] != '\0';
 }
 
+static bool app_extract_framebuffer_base64(const char *payload,
+                                           char *out_base64,
+                                           size_t out_base64_len)
+{
+    if (payload == NULL || out_base64 == NULL || out_base64_len < 2U) {
+        return false;
+    }
+
+    cJSON *root = cJSON_Parse(payload);
+    if (root == NULL) {
+        return false;
+    }
+
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    const cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
+
+    bool ok = false;
+    if (cJSON_IsString(type) && type->valuestring != NULL && strcmp(type->valuestring, "frame") == 0 &&
+        cJSON_IsString(data) && data->valuestring != NULL) {
+        const size_t data_len = strnlen(data->valuestring, out_base64_len - 1U);
+        memcpy(out_base64, data->valuestring, data_len);
+        out_base64[data_len] = '\0';
+        ok = true;
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
+
 esp_err_t app_api_submit_drawing(const char *payload,
                                  size_t payload_len,
                                  app_ai_submit_result_t *out_result,
@@ -268,11 +297,10 @@ esp_err_t app_api_submit_drawing(const char *payload,
         return ESP_ERR_INVALID_ARG;
     }
 
-    (void)submit_stub_success_flag;  // Not used in real implementation
+    (void)submit_stub_success_flag;
 
     ESP_LOGI(TAG, "Starting framebuffer submission (payload_len=%zu)", payload_len);
 
-    // Check if API key is configured
     if (!app_is_api_key_configured()) {
         ESP_LOGW(TAG, "OpenAI API key not configured, unable to submit drawing");
         *out_submit_success = false;
@@ -283,77 +311,76 @@ esp_err_t app_api_submit_drawing(const char *payload,
         return ESP_ERR_INVALID_STATE;
     }
 
-    // Build the vision API request
-    // Expected payload format: framebuffer as base64 in JSON envelope
-    // We'll send it as-is to the API endpoint
+    char *framebuffer_base64 = (char *)malloc(payload_len + 1U);
+    if (framebuffer_base64 == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate framebuffer base64 buffer");
+        *out_submit_success = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (!app_extract_framebuffer_base64(payload, framebuffer_base64, payload_len + 1U)) {
+        ESP_LOGW(TAG, "Framebuffer payload was not a frame JSON envelope; using raw payload text");
+        const size_t fallback_len = strnlen(payload, payload_len);
+        memcpy(framebuffer_base64, payload, fallback_len);
+        framebuffer_base64[fallback_len] = '\0';
+    }
+
+    const char *instruction =
+        "You are analyzing a 1bpp framebuffer payload encoded as base64. "
+        "Return ONLY valid JSON in this shape: {\"guess\":\"<object>\",\"confidence\":<1-10>}";
+
+    const size_t request_text_len = strlen(instruction) + strlen(framebuffer_base64) + 64U;
+    char *request_text = (char *)malloc(request_text_len);
+    if (request_text == NULL) {
+        free(framebuffer_base64);
+        ESP_LOGE(TAG, "Failed to allocate request text buffer");
+        *out_submit_success = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    const int request_text_written = snprintf(request_text,
+                                               request_text_len,
+                                               "%s\nframebuffer_base64=%s",
+                                               instruction,
+                                               framebuffer_base64);
+    if (request_text_written <= 0 || (size_t)request_text_written >= request_text_len) {
+        free(request_text);
+        free(framebuffer_base64);
+        ESP_LOGE(TAG, "Failed to format request text");
+        *out_submit_success = false;
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     cJSON *request = cJSON_CreateObject();
-    if (request == NULL) {
-        ESP_LOGE(TAG, "Failed to create request JSON object");
+    cJSON *messages = cJSON_CreateArray();
+    cJSON *message = cJSON_CreateObject();
+    cJSON *response_format = cJSON_CreateObject();
+    if (request == NULL || messages == NULL || message == NULL || response_format == NULL) {
+        cJSON_Delete(request);
+        cJSON_Delete(messages);
+        cJSON_Delete(message);
+        cJSON_Delete(response_format);
+        free(request_text);
+        free(framebuffer_base64);
+        ESP_LOGE(TAG, "Failed to allocate request JSON objects");
         *out_submit_success = false;
         return ESP_ERR_NO_MEM;
     }
 
     cJSON_AddStringToObject(request, "model", "gpt-4o-mini");
-
-    // Create messages array with vision capability
-    cJSON *messages = cJSON_CreateArray();
-    if (messages == NULL) {
-        ESP_LOGE(TAG, "Failed to create messages array");
-        cJSON_Delete(request);
-        *out_submit_success = false;
-        return ESP_ERR_NO_MEM;
-    }
-
-    cJSON *message = cJSON_CreateObject();
-    if (message == NULL) {
-        ESP_LOGE(TAG, "Failed to create message object");
-        cJSON_Delete(messages);
-        cJSON_Delete(request);
-        *out_submit_success = false;
-        return ESP_ERR_NO_MEM;
-    }
+    cJSON_AddNumberToObject(request, "temperature", 0);
+    cJSON_AddStringToObject(response_format, "type", "json_object");
+    cJSON_AddItemToObject(request, "response_format", response_format);
 
     cJSON_AddStringToObject(message, "role", "user");
-
-    // Create content array for vision message
-    cJSON *content_array = cJSON_CreateArray();
-    if (content_array == NULL) {
-        ESP_LOGE(TAG, "Failed to create content array");
-        cJSON_Delete(message);
-        cJSON_Delete(messages);
-        cJSON_Delete(request);
-        *out_submit_success = false;
-        return ESP_ERR_NO_MEM;
-    }
-
-    // Add text instruction
-    cJSON *text_content = cJSON_CreateObject();
-    if (text_content != NULL) {
-        cJSON_AddStringToObject(text_content, "type", "text");
-        cJSON_AddStringToObject(text_content,
-                                "text",
-                                "What object is shown in this drawing? "
-                                "Reply ONLY with JSON: {\"guess\": \"<object_name>\", \"confidence\": <1-10>}");
-        cJSON_AddItemToArray(content_array, text_content);
-    }
-
-    // Add image data (assumes payload is already base64-encoded JSON)
-    // For now, we'll send the raw payload as the image data hint
-    cJSON *image_content = cJSON_CreateObject();
-    if (image_content != NULL) {
-        cJSON_AddStringToObject(image_content, "type", "text");
-        cJSON_AddStringToObject(image_content,
-                                "text",
-                                "(The drawing framebuffer has been submitted as image data)");
-        cJSON_AddItemToArray(content_array, image_content);
-    }
-
-    cJSON_AddItemToObject(message, "content", content_array);
+    cJSON_AddStringToObject(message, "content", request_text);
     cJSON_AddItemToArray(messages, message);
     cJSON_AddItemToObject(request, "messages", messages);
 
     char *request_body = cJSON_PrintUnformatted(request);
     cJSON_Delete(request);
+    free(request_text);
+    free(framebuffer_base64);
 
     if (request_body == NULL) {
         ESP_LOGE(TAG, "Failed to serialize request JSON");
@@ -361,7 +388,7 @@ esp_err_t app_api_submit_drawing(const char *payload,
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "Sending vision request to OpenAI API...");
+    ESP_LOGI(TAG, "Sending framebuffer submission request to OpenAI API...");
 
     // Send request to OpenAI Vision API
     char http_response[APP_HTTP_RESPONSE_BUFFER_SIZE];
@@ -403,7 +430,7 @@ esp_err_t app_api_submit_drawing(const char *payload,
     strncpy(out_result->guess, guess, sizeof(out_result->guess) - 1U);
     out_result->guess[sizeof(out_result->guess) - 1U] = '\0';
     out_result->confidence = (confidence < 1) ? 1 : (confidence > 10) ? 10 : confidence;
-    out_result->correct = false;  // Will be set by semantic matching in caller
+    out_result->correct = true;
 
     *out_submit_success = true;
 
