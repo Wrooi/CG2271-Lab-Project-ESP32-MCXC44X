@@ -5,7 +5,7 @@
     "target/esp32s2.cfg"
   ],
   "idf.port": "/dev/tty.usbserial-2120",
-  "idf.currentSetup": "/Users/benjamin/.espressif/v6.0/esp-idf",
+  "idf.currentSetup": "C:\\esp\\.espressif\\v6.0\\esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s2"
   },
