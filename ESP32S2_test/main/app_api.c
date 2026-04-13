@@ -520,10 +520,12 @@ esp_err_t app_api_submit_drawing(const char *payload,
     }
 
     const char *instruction =
-        "You are an AI judge for a drawing game. The user was asked to draw a '%s'. "
+        "You are an AI judge for a Pictionary-style drawing game. The user was asked to draw a '%s'. "
         "Look at the base64-encoded 1bpp framebuffer image payload. "
-        "Give a confidence score from 0 to 10 on how accurately this drawing resembles a '%s' (0 is unrecognizable, 10 is perfect). "
-        "Be generous since it is a low-resolution sketch. Return ONLY valid JSON in this shape: {\"guess\":\"<actual_object_you_see>\",\"confidence\":<0-10>}";
+        "Give a confidence score from 0 to 10 on how recognizable the drawing is. "
+        "Basic, iconic abstractions (e.g., a triangle roof on a square for a house, or stick figures) ARE correct and should score 6 to 10. "
+        "Random lines, unrecognizable blobs, or low-effort squiggles that do not resemble the target must score between 0 and 4. "
+        "Return ONLY valid JSON in this shape: {\"guess\":\"<actual_object_you_see>\",\"confidence\":<0-10>}";
 
     char formatted_instruction[1024];
     snprintf(formatted_instruction, sizeof(formatted_instruction), instruction, active_prompt_word, active_prompt_word);
