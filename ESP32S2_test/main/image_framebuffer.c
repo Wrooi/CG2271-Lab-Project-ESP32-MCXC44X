@@ -98,6 +98,8 @@ void image_framebuffer_clear(image_framebuffer_t *framebuffer)
 
     memset(framebuffer->framebuffer, 0, sizeof(framebuffer->framebuffer));
     framebuffer->status.submit_pending = false;
+    framebuffer->status.has_cursor = false;
+    framebuffer->status.pen_down = false;
 }
 
 void image_framebuffer_fill_test_pattern(image_framebuffer_t *framebuffer)
@@ -215,13 +217,16 @@ void image_framebuffer_apply_input(image_framebuffer_t *framebuffer, const image
         } else {
             image_framebuffer_set_pixel(framebuffer, state->x, state->y);
         }
+        framebuffer->status.has_cursor = true;
+    } else {
+        framebuffer->status.has_cursor = false;
     }
 
     framebuffer->status.cursor_x = state->x;
     framebuffer->status.cursor_y = state->y;
     framebuffer->status.pen_down = state->pen_down;
     framebuffer->status.submit_pending = state->submit;
-    framebuffer->status.has_cursor = true;
+    // has_cursor updated above
 }
 
 const image_framebuffer_status_t *image_framebuffer_get_status(const image_framebuffer_t *framebuffer)
