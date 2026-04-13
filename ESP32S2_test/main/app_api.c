@@ -78,7 +78,7 @@ static esp_err_t app_http_post_json(const char *url,
         .length = 0U,
     };
 
-    char auth_header[160];
+    char auth_header[256];
     const int auth_written = snprintf(auth_header, sizeof(auth_header), "Bearer %s", OPENAI_API_KEY);
     if (auth_written <= 0 || (size_t)auth_written >= sizeof(auth_header)) {
         return ESP_ERR_INVALID_SIZE;
