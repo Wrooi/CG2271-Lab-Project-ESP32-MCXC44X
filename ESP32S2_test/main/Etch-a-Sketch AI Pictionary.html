@@ -542,6 +542,7 @@
   }
 
   function showResult(guess, confidence, correct) {
+    setStatus('ok', 'Result received!');
     resultPanel.classList.add('show');
     guessWord.textContent = guess;
     confValue.textContent = confidence + '/10';
@@ -730,9 +731,16 @@
   });
 
   document.getElementById('realSubmitBtn').addEventListener('click', () => {
+    // Hide UI result panel immediately to indicate processing
+    resultPanel.classList.remove('show');
+    setStatus('', 'Submitting to AI...');
     // Send a submit rising edge ($S,x,y,0,0,1)
     // We just reuse 0,0 since coordinates don't matter on submit
     sendWsCommand(`$S,0,0,0,0,1`);
+    // Need to send a falling edge soon after so the ESP32 rising edge logic will detect the next press!
+    setTimeout(() => {
+      sendWsCommand(`$S,0,0,0,0,0`);
+    }, 100);
   });
 
   document.getElementById('simPromptBtn').addEventListener('click', () => {

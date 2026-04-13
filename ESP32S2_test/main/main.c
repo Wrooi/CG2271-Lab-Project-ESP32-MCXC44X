@@ -47,8 +47,8 @@
 enum {
     APP_WS_MAX_OPEN_SOCKETS = 4,
     APP_WS_MAX_CLIENT_FDS = 4,
-    APP_WS_SEND_WAIT_TIMEOUT_SEC = 5,
-    APP_WS_RECV_WAIT_TIMEOUT_SEC = 5,
+    APP_WS_SEND_WAIT_TIMEOUT_SEC = 10,
+    APP_WS_RECV_WAIT_TIMEOUT_SEC = 30, // Increased timeout to 30s to allow slow AI queries to complete without WS disconnect
     APP_WS_DIAG_LOG_PERIOD_MS = 5000,
 };
 
@@ -444,6 +444,7 @@ static esp_err_t app_ws_server_start(void)
     config.server_port = 80;
     config.max_open_sockets = APP_WS_MAX_OPEN_SOCKETS;
     config.lru_purge_enable = true;
+    config.keep_alive_enable = true;
     config.send_wait_timeout = APP_WS_SEND_WAIT_TIMEOUT_SEC;
     config.recv_wait_timeout = APP_WS_RECV_WAIT_TIMEOUT_SEC;
 
