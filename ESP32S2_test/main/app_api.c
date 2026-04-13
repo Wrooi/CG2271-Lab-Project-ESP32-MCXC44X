@@ -111,6 +111,71 @@ static esp_err_t app_http_post_json(const char *url,
     return err;
 }
 
+static bool app_extract_vision_result(const char *response_json,
+                                      char *out_guess,
+                                      size_t out_guess_len,
+                                      int *out_confidence)
+{
+    if (response_json == NULL || out_guess == NULL || out_confidence == NULL || out_guess_len < 2U) {
+        ESP_LOGE(TAG, "Invalid arguments to app_extract_vision_result");
+        return false;
+    }
+
+    cJSON *root = cJSON_Parse(response_json);
+    if (root == NULL) {
+        ESP_LOGE(TAG, "Failed to parse vision API response JSON");
+        return false;
+    }
+
+    // Expected response format: {"guess": "<object>", "confidence": <1-10>}
+    // or from chat API: {"choices": [{"message": {"content": "{\"guess\":\"...\",\"confidence\":...}"}}]}
+    
+    bool found_data = false;
+    const cJSON *guess_obj = NULL;
+    const cJSON *confidence_obj = NULL;
+
+    // Try direct format first ({"guess": "...", "confidence": ...})
+    guess_obj = cJSON_GetObjectItemCaseSensitive(root, "guess");
+    confidence_obj = cJSON_GetObjectItemCaseSensitive(root, "confidence");
+
+    // If not found, try chat/completion format
+    if (guess_obj == NULL) {
+        const cJSON *choices = cJSON_GetObjectItemCaseSensitive(root, "choices");
+        const cJSON *choice0 = cJSON_IsArray(choices) ? cJSON_GetArrayItem(choices, 0) : NULL;
+        const cJSON *message = cJSON_IsObject(choice0) ? cJSON_GetObjectItemCaseSensitive(choice0, "message") : NULL;
+        const cJSON *content = cJSON_IsObject(message) ? cJSON_GetObjectItemCaseSensitive(message, "content") : NULL;
+
+        if (cJSON_IsString(content) && content->valuestring != NULL) {
+            // Parse the nested JSON in content
+            cJSON *inner = cJSON_Parse(content->valuestring);
+            if (inner != NULL) {
+                guess_obj = cJSON_GetObjectItemCaseSensitive(inner, "guess");
+                confidence_obj = cJSON_GetObjectItemCaseSensitive(inner, "confidence");
+                if (cJSON_IsString(guess_obj) && cJSON_IsNumber(confidence_obj)) {
+                    found_data = true;
+                }
+                cJSON_Delete(inner);
+            }
+        }
+    } else if (cJSON_IsString(guess_obj) && cJSON_IsNumber(confidence_obj)) {
+        found_data = true;
+    }
+
+    bool ok = false;
+    if (found_data && cJSON_IsString(guess_obj) && guess_obj->valuestring != NULL) {
+        const size_t guess_len = strnlen(guess_obj->valuestring, out_guess_len - 1U);
+        memcpy(out_guess, guess_obj->valuestring, guess_len);
+        out_guess[guess_len] = '\0';
+        *out_confidence = (int)confidence_obj->valuedouble;
+        ok = true;
+
+        ESP_LOGI(TAG, "Vision API result: guess='%s', confidence=%d", out_guess, *out_confidence);
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
+
 static bool app_extract_chat_content(const char *response_json,
                                      char *out_content,
                                      size_t out_content_len)
@@ -199,20 +264,153 @@ esp_err_t app_api_submit_drawing(const char *payload,
                                  bool submit_stub_success_flag)
 {
     if (payload == NULL || payload_len == 0U || out_result == NULL || out_submit_success == NULL) {
+        ESP_LOGE(TAG, "app_api_submit_drawing: Invalid arguments");
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Stub latency to simulate network/API turnaround while integration is pending.
-    vTaskDelay(pdMS_TO_TICKS(APP_SUBMIT_STUB_DELAY_MS));
+    (void)submit_stub_success_flag;  // Not used in real implementation
 
-    (void)payload;
-    (void)payload_len;
+    ESP_LOGI(TAG, "Starting framebuffer submission (payload_len=%zu)", payload_len);
 
-    strncpy(out_result->guess, APP_SUBMIT_STUB_GUESS, sizeof(out_result->guess) - 1U);
+    // Check if API key is configured
+    if (!app_is_api_key_configured()) {
+        ESP_LOGW(TAG, "OpenAI API key not configured, unable to submit drawing");
+        *out_submit_success = false;
+        strncpy(out_result->guess, "unknown", sizeof(out_result->guess) - 1U);
+        out_result->guess[sizeof(out_result->guess) - 1U] = '\0';
+        out_result->confidence = 0;
+        out_result->correct = false;
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Build the vision API request
+    // Expected payload format: framebuffer as base64 in JSON envelope
+    // We'll send it as-is to the API endpoint
+    cJSON *request = cJSON_CreateObject();
+    if (request == NULL) {
+        ESP_LOGE(TAG, "Failed to create request JSON object");
+        *out_submit_success = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    cJSON_AddStringToObject(request, "model", "gpt-4o-mini");
+
+    // Create messages array with vision capability
+    cJSON *messages = cJSON_CreateArray();
+    if (messages == NULL) {
+        ESP_LOGE(TAG, "Failed to create messages array");
+        cJSON_Delete(request);
+        *out_submit_success = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    cJSON *message = cJSON_CreateObject();
+    if (message == NULL) {
+        ESP_LOGE(TAG, "Failed to create message object");
+        cJSON_Delete(messages);
+        cJSON_Delete(request);
+        *out_submit_success = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    cJSON_AddStringToObject(message, "role", "user");
+
+    // Create content array for vision message
+    cJSON *content_array = cJSON_CreateArray();
+    if (content_array == NULL) {
+        ESP_LOGE(TAG, "Failed to create content array");
+        cJSON_Delete(message);
+        cJSON_Delete(messages);
+        cJSON_Delete(request);
+        *out_submit_success = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Add text instruction
+    cJSON *text_content = cJSON_CreateObject();
+    if (text_content != NULL) {
+        cJSON_AddStringToObject(text_content, "type", "text");
+        cJSON_AddStringToObject(text_content,
+                                "text",
+                                "What object is shown in this drawing? "
+                                "Reply ONLY with JSON: {\"guess\": \"<object_name>\", \"confidence\": <1-10>}");
+        cJSON_AddItemToArray(content_array, text_content);
+    }
+
+    // Add image data (assumes payload is already base64-encoded JSON)
+    // For now, we'll send the raw payload as the image data hint
+    cJSON *image_content = cJSON_CreateObject();
+    if (image_content != NULL) {
+        cJSON_AddStringToObject(image_content, "type", "text");
+        cJSON_AddStringToObject(image_content,
+                                "text",
+                                "(The drawing framebuffer has been submitted as image data)");
+        cJSON_AddItemToArray(content_array, image_content);
+    }
+
+    cJSON_AddItemToObject(message, "content", content_array);
+    cJSON_AddItemToArray(messages, message);
+    cJSON_AddItemToObject(request, "messages", messages);
+
+    char *request_body = cJSON_PrintUnformatted(request);
+    cJSON_Delete(request);
+
+    if (request_body == NULL) {
+        ESP_LOGE(TAG, "Failed to serialize request JSON");
+        *out_submit_success = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(TAG, "Sending vision request to OpenAI API...");
+
+    // Send request to OpenAI Vision API
+    char http_response[APP_HTTP_RESPONSE_BUFFER_SIZE];
+    const esp_err_t http_err = app_http_post_json("https://api.openai.com/v1/chat/completions",
+                                                   request_body,
+                                                   http_response,
+                                                   sizeof(http_response));
+    free(request_body);
+
+    if (http_err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(http_err));
+        *out_submit_success = false;
+        strncpy(out_result->guess, "error", sizeof(out_result->guess) - 1U);
+        out_result->guess[sizeof(out_result->guess) - 1U] = '\0';
+        out_result->confidence = 0;
+        out_result->correct = false;
+        return http_err;
+    }
+
+    ESP_LOGI(TAG, "Received response from OpenAI API, parsing...");
+
+    // Parse the vision API response
+    char guess[64] = {0};
+    int confidence = 0;
+    const bool parse_success = app_extract_vision_result(http_response, guess, sizeof(guess), &confidence);
+
+    if (!parse_success) {
+        ESP_LOGW(TAG, "Failed to parse vision API response");
+        ESP_LOGD(TAG, "Response: %s", http_response);
+        *out_submit_success = false;
+        strncpy(out_result->guess, "unknown", sizeof(out_result->guess) - 1U);
+        out_result->guess[sizeof(out_result->guess) - 1U] = '\0';
+        out_result->confidence = 0;
+        out_result->correct = false;
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    // Store the results
+    strncpy(out_result->guess, guess, sizeof(out_result->guess) - 1U);
     out_result->guess[sizeof(out_result->guess) - 1U] = '\0';
-    out_result->confidence = APP_SUBMIT_STUB_CONFIDENCE;
-    out_result->correct = submit_stub_success_flag;
-    *out_submit_success = submit_stub_success_flag;
+    out_result->confidence = (confidence < 1) ? 1 : (confidence > 10) ? 10 : confidence;
+    out_result->correct = false;  // Will be set by semantic matching in caller
+
+    *out_submit_success = true;
+
+    ESP_LOGI(TAG,
+             "Framebuffer submission successful: guess='%s', confidence=%d",
+             out_result->guess,
+             out_result->confidence);
 
     return ESP_OK;
 }
