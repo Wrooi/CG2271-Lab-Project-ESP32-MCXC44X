@@ -100,6 +100,30 @@ void image_framebuffer_clear(image_framebuffer_t *framebuffer)
     framebuffer->status.submit_pending = false;
 }
 
+void image_framebuffer_fill_test_pattern(image_framebuffer_t *framebuffer)
+{
+    if (framebuffer == NULL) {
+        return;
+    }
+
+    memset(framebuffer->framebuffer, 0, sizeof(framebuffer->framebuffer));
+
+    for (uint16_t i = 0; i < IMAGE_FRAMEBUFFER_CANVAS_WIDTH; ++i) {
+        image_framebuffer_set_pixel(framebuffer, i, i);
+        image_framebuffer_set_pixel(framebuffer, i, (uint16_t)(IMAGE_FRAMEBUFFER_CANVAS_HEIGHT - 1U - i));
+    }
+
+    for (uint16_t x = 0; x < IMAGE_FRAMEBUFFER_CANVAS_WIDTH; ++x) {
+        image_framebuffer_set_pixel(framebuffer, x, 0U);
+        image_framebuffer_set_pixel(framebuffer, x, (uint16_t)(IMAGE_FRAMEBUFFER_CANVAS_HEIGHT - 1U));
+    }
+
+    for (uint16_t y = 0; y < IMAGE_FRAMEBUFFER_CANVAS_HEIGHT; ++y) {
+        image_framebuffer_set_pixel(framebuffer, 0U, y);
+        image_framebuffer_set_pixel(framebuffer, (uint16_t)(IMAGE_FRAMEBUFFER_CANVAS_WIDTH - 1U), y);
+    }
+}
+
 bool image_framebuffer_parse_input_packet(const char *packet, image_input_state_t *out_state)
 {
     if (packet == NULL || out_state == NULL) {

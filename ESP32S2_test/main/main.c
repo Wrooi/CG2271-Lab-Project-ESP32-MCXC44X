@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
@@ -57,30 +58,35 @@ enum {
     APP_RTOS_UART_RX_TASK_STACK_SIZE = 4096,
     APP_RTOS_SOCKET_DISPATCH_TASK_STACK_SIZE = 8192,
     APP_RTOS_FRAMEBUFFER_TASK_STACK_SIZE = 12288,
+    APP_RTOS_API_INIT_TASK_STACK_SIZE = 8192,
 };
 
 typedef struct {
     const char *uart_rx_task_name;
     const char *socket_dispatch_task_name;
     const char *framebuffer_task_name;
+    const char *api_init_task_name;
     uint32_t uart_queue_send_timeout_ms;
     uint32_t framebuffer_queue_send_timeout_ms;
     uint32_t stack_watermark_log_period_ms;
     UBaseType_t uart_rx_task_priority;
     UBaseType_t socket_dispatch_task_priority;
     UBaseType_t framebuffer_task_priority;
+    UBaseType_t api_init_task_priority;
 } app_rtos_config_t;
 
 static const app_rtos_config_t APP_RTOS_CONFIG = {
     .uart_rx_task_name = "uart_rx_task",
     .socket_dispatch_task_name = "socket_dispatch_task",
     .framebuffer_task_name = "framebuffer_task",
+    .api_init_task_name = "api_init_task",
     .uart_queue_send_timeout_ms = 0U,
     .framebuffer_queue_send_timeout_ms = 0U,
     .stack_watermark_log_period_ms = 5000U,
     .uart_rx_task_priority = 5,
     .socket_dispatch_task_priority = 6,
     .framebuffer_task_priority = 4,
+    .api_init_task_priority = 3,
 };
 
 static const char *TAG = "image_framebuffer";
@@ -103,6 +109,7 @@ typedef enum {
     FRAMEBUFFER_EVENT_APPLY_STATE = 0,
     FRAMEBUFFER_EVENT_SUBMIT = 1,
     FRAMEBUFFER_EVENT_PROMPT_REQUEST = 2,
+    FRAMEBUFFER_EVENT_API_TEST = 3,
 } framebuffer_event_type_t;
 
 typedef struct {
@@ -128,6 +135,10 @@ static StaticTask_t s_framebuffer_task_tcb;
 static StackType_t s_framebuffer_task_stack[APP_RTOS_FRAMEBUFFER_TASK_STACK_SIZE];
 static TaskHandle_t s_framebuffer_task_handle;
 
+static StaticTask_t s_api_init_task_tcb;
+static StackType_t s_api_init_task_stack[APP_RTOS_API_INIT_TASK_STACK_SIZE];
+static TaskHandle_t s_api_init_task_handle;
+
 static uint32_t s_uart_line_count;
 static uint32_t s_uart_queue_drop_count;
 static uint32_t s_framebuffer_queue_drop_count;
@@ -137,6 +148,7 @@ static uint32_t s_uart_parse_fail_count;
 static bool s_submit_stub_success_flag = true;
 
 static esp_err_t app_socket_send_frame(const char *payload, size_t payload_len);
+static bool app_ws_handle_text_command(const char *payload);
 
 static char s_active_prompt_word[APP_API_PROMPT_WORD_BUFFER_SIZE] = "house";
 
@@ -407,6 +419,12 @@ static esp_err_t app_ws_handler(httpd_req_t *req)
     }
 
     err = httpd_ws_recv_frame(req, &rx_pkt, rx_pkt.len);
+    if (err == ESP_OK && rx_pkt.type == HTTPD_WS_TYPE_TEXT) {
+        ((char *)rx_pkt.payload)[rx_pkt.len] = '\0';
+        if (!app_ws_handle_text_command((const char *)rx_pkt.payload)) {
+            ESP_LOGI(TAG, "Ignoring WebSocket text command: %s", (const char *)rx_pkt.payload);
+        }
+    }
     free(rx_pkt.payload);
     return err;
 }
@@ -859,6 +877,24 @@ static void app_enqueue_prompt_request_event(void)
     }
 }
 
+static void app_enqueue_api_test_event(void)
+{
+    if (s_framebuffer_state_queue == NULL) {
+        return;
+    }
+
+    framebuffer_state_msg_t msg = {
+        .type = FRAMEBUFFER_EVENT_API_TEST,
+    };
+
+    const BaseType_t queued = xQueueSend(s_framebuffer_state_queue,
+                                         &msg,
+                                         pdMS_TO_TICKS(APP_RTOS_CONFIG.framebuffer_queue_send_timeout_ms));
+    if (queued != pdPASS) {
+        s_framebuffer_queue_drop_count++;
+    }
+}
+
 static void app_process_packet_line_fast_path(const char *packet_line)
 {
     static TickType_t last_malformed_log_tick;
@@ -941,7 +977,42 @@ static void app_process_framebuffer_event(const framebuffer_state_msg_t *msg,
         if (notify_err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to send PROMPT ready command to MCU: %s", esp_err_to_name(notify_err));
         }
+        return;
     }
+
+    if (msg->type == FRAMEBUFFER_EVENT_API_TEST) {
+        image_framebuffer_fill_test_pattern(&s_framebuffer);
+        ESP_LOGI(TAG, "API test pattern prepared; submitting framebuffer to OpenAI");
+        app_submit_drawing_for_ai(socket_payload, socket_payload_len);
+        return;
+    }
+}
+
+static bool app_ws_handle_text_command(const char *payload)
+{
+    if (payload == NULL || payload[0] == '\0') {
+        return false;
+    }
+
+    if (strcmp(payload, "api_test") == 0) {
+        app_enqueue_api_test_event();
+        return true;
+    }
+
+    cJSON *root = cJSON_Parse(payload);
+    if (root == NULL) {
+        return false;
+    }
+
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    bool handled = false;
+    if (cJSON_IsString(type) && type->valuestring != NULL && strcmp(type->valuestring, "api_test") == 0) {
+        app_enqueue_api_test_event();
+        handled = true;
+    }
+
+    cJSON_Delete(root);
+    return handled;
 }
 
 static void app_uart_rx_task(void *arg)
@@ -1009,6 +1080,31 @@ static void app_framebuffer_task(void *arg)
         if (received == pdPASS) {
             app_process_framebuffer_event(&msg, socket_payload, SOCKET_PAYLOAD_BUFFER_SIZE);
         }
+    }
+}
+
+static void app_api_init_task(void *arg)
+{
+    (void)arg;
+
+    ESP_LOGI(TAG, "API init task waiting for Wi-Fi connection...");
+
+    // Wait for Wi-Fi to connect before attempting any network operations.
+    xEventGroupWaitBits(s_wifi_event_group,
+                        APP_WIFI_CONNECTED_BIT,
+                        false,
+                        true,
+                        portMAX_DELAY);
+
+    ESP_LOGI(TAG, "Wi-Fi connected. System ready with default prompt: %s", s_active_prompt_word);
+    ESP_LOGI(TAG,
+             "Note: Initial prompt fetch deferred to avoid heap allocation during startup. "
+             "Prompt can be refreshed on user request (button press).");
+
+    // Task is ready to handle future prompt refresh requests triggered by user actions.
+    // For now, sleep indefinitely; in future this can wake on button press or queue events.
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }
 
@@ -1111,11 +1207,34 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG,
-             "RTOS tasks started: %s, %s and %s",
+             "RTOS tasks started: %s, %s, %s, and %s",
              APP_RTOS_CONFIG.uart_rx_task_name,
              APP_RTOS_CONFIG.socket_dispatch_task_name,
-             APP_RTOS_CONFIG.framebuffer_task_name);
+             APP_RTOS_CONFIG.framebuffer_task_name,
+             APP_RTOS_CONFIG.api_init_task_name);
 
-    // Note: Initial prompt fetch is deferred until after FreeRTOS scheduler is fully ready.
-    // Default prompt "house" will be used until user requests a new prompt via button.
+    // Create the API initialization task which will wait for Wi-Fi and then fetch the initial prompt.
+    s_api_init_task_handle = xTaskCreateStatic(app_api_init_task,
+                                               APP_RTOS_CONFIG.api_init_task_name,
+                                               APP_RTOS_API_INIT_TASK_STACK_SIZE,
+                                               NULL,
+                                               APP_RTOS_CONFIG.api_init_task_priority,
+                                               s_api_init_task_stack,
+                                               &s_api_init_task_tcb);
+    if (s_api_init_task_handle == NULL) {
+        ESP_LOGE(TAG, "Failed to create API init task");
+        vTaskDelete(s_framebuffer_task_handle);
+        s_framebuffer_task_handle = NULL;
+        vTaskDelete(s_socket_dispatch_task_handle);
+        s_socket_dispatch_task_handle = NULL;
+        vTaskDelete(s_uart_rx_task_handle);
+        s_uart_rx_task_handle = NULL;
+        vQueueDelete(s_framebuffer_state_queue);
+        s_framebuffer_state_queue = NULL;
+        vQueueDelete(s_uart_packet_queue);
+        s_uart_packet_queue = NULL;
+        return;
+    }
+
+    ESP_LOGI(TAG, "All RTOS tasks and services initialized successfully");
 }
