@@ -1000,6 +1000,11 @@ static bool app_ws_handle_text_command(const char *payload)
         return true;
     }
 
+    if (strncmp(payload, "$S,", 3) == 0) {
+        app_process_packet_line_fast_path(payload);
+        return true;
+    }
+
     cJSON *root = cJSON_Parse(payload);
     if (root == NULL) {
         return false;
